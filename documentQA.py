@@ -57,7 +57,10 @@ def process_file(file: AskFileResponse):
 
     elif file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
         Loader = ExcelLoader
-    print('THIS IS TYPE',file.type)
+
+    else:
+        raise ValueError('File type is not supported')
+    
     tempfile_name = './tempfile.txt'
     with open(tempfile_name, 'wb') as tmpfile:
         
@@ -76,24 +79,7 @@ def process_file(file: AskFileResponse):
     return docs
     
 
-    """with tempfile.NamedTemporaryFile(delete=False, ) as tempfile:
-        
-        tempfile.write(file.content)
-        loader = Loader('./tempfile.txt')
-
-        print("TYPE OF LOADER", type(Loader))
-        documents = loader.load()
-        
-        docs = text_splitter.split_documents(documents)
-
-        
-
-        for i, doc in enumerate(docs):
-            doc.metadata["source"] = f"source_{i}"
-        
-        return docs"""
     
-
 
 def get_docsearch(file: AskFileResponse):
     docs = process_file(file)
