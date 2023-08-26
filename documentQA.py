@@ -106,25 +106,29 @@ async def start():
             accept=["text/plain", "text/csv", "application/pdf", ".xlsx"],
             max_size_mb=20,
             timeout=180,
+            max_files= 5,
         ).send()
-    
-    file = files[0]
-    
-    msg = cl.Message(content=f"Processing `{file.name}`...")
-    await msg.send()
 
-    # No async implementation in the Pinecone client, fallback to sync
-    docsearch = await cl.make_async(get_docsearch)(file)
+    for file in files:    
+        msg = cl.Message(content=f"Processing `{file.name}`...")
+        await msg.send()
 
-    chain = RetrievalQAWithSourcesChain.from_chain_type(
-        ChatOpenAI(temperature=0, streaming=True),
-        chain_type="stuff",
-        retriever=docsearch.as_retriever(max_tokens_limit=2000),
-    )
+        # No async implementation in the Pinecone client, fallback to sync
+        docsearch = await cl.make_async(get_docsearch)(file)
 
-    # Let the user know that the system is ready
-    msg.content = f"`{file.name}` processed. You can now ask questions!"
+        chain = RetrievalQAWithSourcesChain.from_chain_type(
+            ChatOpenAI(temperature=0, streaming=True),
+            chain_type="stuff",
+            retriever=docsearch.as_retriever(max_tokens_limit=2000),
+        )
+
+        # Let the user know that the system is ready
+        msg.content = f"`{file.name}` processed"
+        await msg.update()
+
+    msg.content = f"all `{len(files)}` files processed. Here you go. Ask me about your data"
     await msg.update()
+
 
     cl.user_session.set("chain", chain)
 
