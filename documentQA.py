@@ -2,7 +2,9 @@ import os
 import pypdf
 
 # Import all language models and tools fro langchain
-from langchain.document_loaders import PyPDFLoader, TextLoader
+from langchain.document_loaders import PyPDFLoader, TextLoader, UnstructuredExcelLoader
+from langchain.document_loaders.csv_loader import CSVLoader
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
@@ -16,12 +18,32 @@ os.environ['OPENAI_API_KEY'] = "sk-VfilAsMnBGmwY3E6gYdWT3BlbkFJHUaW54KQy2ZV693wK
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 embeddings = OpenAIEmbeddings()
 
+class ExcelLoader():
+    def __init__(self, name=None):
+        self.ext = 'xlsx'
+        self.name =  name
+        import pandas as pd
+        self.loader = pd.read_excel
+    
+    def load(self):
+        import pandas as pd
+        df = self.loader(self.name)
+        print(df)
+        df.to_csv('./tempfile.csv', index=False)
+
+        loader = CSVLoader('./tempfile.csv')
+        docs =  loader.load()
+
+        os.remove('./tempfile.csv')
+
+        return docs
 
 welcome_message = """Welcome to the **AskMAY** ! To get started:
 1. Upload a PDF or text file
 2. Ask a question about the file you uploaded
 3. Save yourself of having to go through a whole document to get a specific information
 """
+
 
 def process_file(file: AskFileResponse):
     import tempfile
@@ -30,24 +52,54 @@ def process_file(file: AskFileResponse):
         Loader = TextLoader
     elif file.type == "application/pdf":
         Loader = PyPDFLoader
-    
-    print("THIS WAS THE FILE TYPE", file.type)
-    with tempfile.NamedTemporaryFile(delete=False) as tempfile:
-        tempfile.write(file.content)
+    elif file.type == "text/csv":
+        Loader = CSVLoader
+
+    elif file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        Loader = ExcelLoader
+    print('THIS IS TYPE',file.type)
+    tempfile_name = './tempfile.txt'
+    with open(tempfile_name, 'wb') as tmpfile:
         
-        loader = Loader(tempfile.name)
+        tmpfile.write(file.content)
+    #print('This is what file holds', file.content)
+    loader = Loader(tempfile_name)
+    documents = loader.load()
+    
+    os.remove(tempfile_name)
+    docs = text_splitter.split_documents(documents)
+
+
+    for i, doc in enumerate(docs):
+        doc.metadata["source"] = f"source_{i}"
+    
+    return docs
+    
+
+    """with tempfile.NamedTemporaryFile(delete=False, ) as tempfile:
+        
+        tempfile.write(file.content)
+        loader = Loader('./tempfile.txt')
+
+        print("TYPE OF LOADER", type(Loader))
         documents = loader.load()
+        
         docs = text_splitter.split_documents(documents)
+
+        
+
         for i, doc in enumerate(docs):
             doc.metadata["source"] = f"source_{i}"
-        return docs
+        
+        return docs"""
+    
+
 
 def get_docsearch(file: AskFileResponse):
     docs = process_file(file)
 
     # Save data in the user session
     cl.user_session.set("docs", docs)
-
     # Create a unique namespace for the file
 
     docsearch = Chroma.from_documents(
@@ -65,7 +117,7 @@ async def start():
     while files is None:
         files = await cl.AskFileMessage(
             content=welcome_message,
-            accept=["text/plain", "application/pdf"],
+            accept=["text/plain", "text/csv", "application/pdf", ".xlsx"],
             max_size_mb=20,
             timeout=180,
         ).send()
