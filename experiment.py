@@ -1,89 +1,59 @@
 import os
 import pypdf
+os.environ["LANGCHAIN_TRACING"] = "true"
 
-
-class ExcelLoader():
-    def __init__(self, name=None):
-        self.ext = 'xlsx'
-        self.name =  name
-        import pandas as pd
-        self.loader = pd.read_excel
-    
-    def load(self):
-        import pandas as pd
-        df = self.loader(self.name)
-        print(df)
-        df.to_csv('./tempfile.csv', index=False)
-
-        loader = CSVLoader('./tempfile.csv')
-        docs =  loader.load()
-
-        os.remove('./tempfile.csv')
-
-        return docs
-
-        
 # Import all language models and tools fro langchain
-from langchain.document_loaders import PyPDFLoader, TextLoader, UnstructuredExcelLoader, unstructured
+from langchain.document_loaders import PyPDFLoader, TextLoader, UnstructuredExcelLoader
 from langchain.document_loaders.csv_loader import CSVLoader
 
+from langchain.memory import ConversationBufferMemory
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
-from langchain.chains import RetrievalQAWithSourcesChain
+from langchain.chains import RetrievalQAWithSourcesChain, ConversationalRetrievalChain
+from langchain.agents import create_csv_agent, AgentType, initialize_agent, Tool
+from langchain.agents.agent_toolkits import create_retriever_tool
 from langchain.chat_models import ChatOpenAI
 import chainlit as cl
 from chainlit.types import AskFileResponse
 
+from langchain.agents import create_sql_agent 
+from langchain.agents.agent_toolkits import SQLDatabaseToolkit 
+from langchain.sql_database import SQLDatabase 
+
 os.environ['OPENAI_API_KEY'] = "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"
 
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages= True)
+llm = ChatOpenAI(temperature=0,model="gpt-3.5-turbo-0613", streaming=True)
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 embeddings = OpenAIEmbeddings()
+username = 'postgres'
+host = 'localhost'
+port = '5432'
+mydatabase = 'postgres'
+password = 'Assalaam'
 
+pg_uri = f"postgresql+psycopg2://{username}:{password}@{host}:{port}/{mydatabase}"
 
-welcome_message = """Welcome to the **AskMAY** ! To get started:
-1. Upload a PDF or text file
-2. Ask a question about the file you uploaded
-3. Save yourself of having to go through a whole document to get a specific information
-"""
+db = SQLDatabase.from_uri(pg_uri)
+toolkit = SQLDatabaseToolkit(db=db, llm=llm)
 
-def process_file(file: dict):
-    
-    loader = ExcelLoader('./names.xlsx')
-    documents = loader.load()
-    print(documents)
-    docs = text_splitter.split_documents(documents)
-    return docs
+llm_sql_agent = create_sql_agent(
+    llm=llm,
+    toolkit=toolkit,
+    verbose=True,
+    agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+)
 
-def get_docsearch(file: dict):
-    docs = process_file(file)
+while True:
+    message = input('User:> ')
+    try:
+        response = llm_sql_agent.run(input=message)
+    except ValueError as e:
+        response = str(e)
+        if not response.startswith("Could not parse tool input: "):
+            raise e
+        response = response.removeprefix("Could not parse LLM output: `").removesuffix("`")
 
-    # Create a unique namespace for the file
-    
-    docsearch = Chroma.from_documents(
-        docs, embeddings
-    )
-    return docsearch
-
-def start():
-    # Sending an image with the local file path
-    file = {'name':'./names.csv'}
-    
-    print("Processing doc")
-
-    # No async implementation in the Pinecone client, fallback to sync
-    docsearch = get_docsearch(file)
-    print(docsearch)
-    chain = RetrievalQAWithSourcesChain.from_chain_type(
-        ChatOpenAI(temperature=0, streaming=True),
-        chain_type="stuff",
-        retriever=docsearch.as_retriever(max_tokens_limit=2000),
-    )
-    return chain
-
-
-chain = start()
-
-message = "What number is Muhammad King Yakub on the list? Print out all his details"
-res = chain({'question':message})
-print(res['answer'])
+    print('Chatbot:> ', response)
