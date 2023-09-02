@@ -212,7 +212,7 @@ async def start():
     msg.content = f"all `{len(files)}` files processed. Here you go. Ask me about your data"
     await msg.update()
 
-
+    res = agent.run("What is the average test score")
     cl.user_session.set("agent", agent)
 
 @cl.on_message
@@ -221,7 +221,7 @@ async def main(message):
     cb = cl.AsyncLangchainCallbackHandler(
         stream_final_answer=True, answer_prefix_tokens=["FINAL", "ANSWER"]
     )
-    
+
     cb.answer_reached = True
 
     
