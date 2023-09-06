@@ -24,6 +24,7 @@ from langchain.vectorstores import Chroma
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.agents import initialize_agent, Tool, AgentType
 from langchain.memory import ConversationBufferMemory
+from langchain.chains import RetrievalQAWithSourcesChain, ConversationalRetrievalChain
 
 
 
@@ -63,8 +64,11 @@ def init_messages() -> None:
             SystemMessage(
                 content=(
                     "You are a helpful AI QA assistant. "
+                    "You have access to csv tools. Use it to answer questions."
+                    "You have access to sql tool you can query a database"
                     "When answering questions, use the context enclosed by triple backquotes if it is relevant. "
                     "If you don't know the answer, just say that you don't know, "
+                    "You should only say you don't know an answer untill you have used all the tools available to you."
                     "don't try to make up an answer. "
                     )
             )
@@ -76,11 +80,12 @@ def get_csv_file() -> Optional[str]:
     Function to load PDF text and split it into chunks.
     """
     import tempfile
+    
     st.header("Document Upload")
     
     uploaded_files = st.file_uploader(
         label="Here, upload your documents you want AskMAY to use to answer",
-        type= ["csv", 'xlsx'],
+        type= ["csv", 'xlsx', 'pdf', 'txt'],
         accept_multiple_files= True
     )
     import pandas as pd
@@ -111,9 +116,9 @@ def get_csv_file() -> Optional[str]:
                 raise ValueError('File type is not supported')
 
             if Loader:
-                with tempfile.NamedTemporaryFile(delete=False) as tempfile:
-                    tempfile.write(file.content)
-                    loader = Loader(tempfile.name)
+                with tempfile.NamedTemporaryFile(delete=False) as tpfile:
+                    tpfile.write(file.getvalue())
+                    loader = Loader(tpfile.name)
                     docs = loader.load()
                     all_docs.extend(docs)
 
@@ -163,8 +168,12 @@ def select_llm() -> Union[ChatOpenAI, LlamaCpp]:
                                    "llama-2-13b-chat.ggmlv3.q2_K.bin"))
     temperature = st.sidebar.slider("Temperature:", min_value=0.0,
                                     max_value=1.0, value=0.0, step=0.01)
+    chain_mode = st.sidebar.selectbox(
+                        "What would you like to query?",
+                        ("Documents", "Data")
+    )
     
-    return model_name, temperature
+    return model_name, temperature, chain_mode
 
 
 def init_agent(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenAI, LlamaCpp]:
@@ -191,16 +200,17 @@ def init_agent(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenA
         )
 
     sql_agent = build_sql_agent(llm=llm)
-    try:
-        file_paths = kwargs['csv']
+    
+    file_paths = kwargs['csv']
+    if file_paths is not None:
         with st.spinner("Loading CSV FIle ..."):
             csv_agent = build_csv_agent(llm=llm, file_path=file_paths)
         tools = [
             csv_as_tool(csv_agent),
             sql_as_tool(sql_agent),
         ]
-    except KeyError:
-
+    
+    else:
         tools = [
             sql_as_tool(sql_agent),
         ]
@@ -214,6 +224,33 @@ def init_agent(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenA
     )
     return agent, llm
 
+def get_retrieval_chain(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenAI, LlamaCpp]:
+    if model_name.startswith("gpt-"):
+        llm =  ChatOpenAI(temperature=temperature, model_name=model_name)
+    
+    elif model_name.startswith("text-dav"):
+        llm =  OpenAI(temperature=temperature, model_name=model_name)
+    
+    elif model_name.startswith("llama-2-"):
+        callback_manager = CallbackManager([StreamingStdOutCallbackHandler()])
+        llm = LlamaCpp(
+            model_path=f"./models/{model_name}.bin",
+            input={"temperature": temperature,
+                   "max_length": 2048,
+                   "top_p": 1
+                   },
+            n_ctx=2048,
+            callback_manager=callback_manager,
+            verbose=False,  # True
+        )
+    docsearch = kwargs['docsearch']
+    retrieval_chain = RetrievalQAWithSourcesChain.from_chain_type(
+            llm,
+            retriever = docsearch.as_retriever(max_tokens_limit=4097)
+            )
+        
+    return retrieval_chain, llm
+
 def load_embeddings(model_name: str) -> Union[OpenAIEmbeddings, LlamaCppEmbeddings]:
     """
     Load embedding model.
@@ -223,14 +260,25 @@ def load_embeddings(model_name: str) -> Union[OpenAIEmbeddings, LlamaCppEmbeddin
     elif model_name.startswith("llama-2-"):
         return LlamaCppEmbeddings(model_path=f"./models/{model_name}.bin")
 
-def get_answer(llm_agent,llm, message) -> tuple[str, float]:
+def get_answer(llm_chain,llm, message) -> tuple[str, float]:
     """
     Get the AI answer to user questions.
     """
 
     if isinstance(llm, (ChatOpenAI, OpenAI)):
         with get_openai_callback() as cb:
-            answer = llm_agent.run(message)
+            try:
+                if isinstance(llm_chain, RetrievalQAWithSourcesChain):
+                    response = llm_chain(message)
+                    answer =  str(response['answer']) + "\n\nSOURCES: " + str(response['sources'])
+                else:
+                    answer = llm_chain.run(message)
+            except ValueError as e:
+                response = str(e)
+                if not response.startswith("Could not parse tool input: "):
+                    raise e
+                answer = response.removeprefix("Could not parse LLM output: `").removesuffix("`")
+            
         return answer, cb.total_cost
     #if isinstance(llm, LlamaCpp):
      #   return llm(llama_v2_prompt(convert_langchainschema_to_dict(messages))), 0.0
@@ -283,7 +331,8 @@ def main() -> None:
         st.session_state['history'] = []
 
     init_page()
-    model_name, temperature = select_llm()
+    model_name, temperature, chain_mode = select_llm()
+
     
     embeddings = load_embeddings(model_name)
     files = get_csv_file()
@@ -297,11 +346,32 @@ def main() -> None:
                 texts = fp[1]
         if texts:
             chroma = build_vectore_store(texts, embeddings)
-        if paths:
-            print('GOT PATHS')
-            llm_agent, llm = init_agent(model_name, temperature, csv=paths)
-        else:
-            llm_agent, llm = init_agent(model_name, temperature)
+        
+        if chain_mode == "Data":
+            if paths is None:
+                st.sidebar.warning("Note: No CSV data uploaded. All queries will be directed to the Database")
+            llm_chain, llm = init_agent(model_name, temperature, csv=paths)
+        elif chain_mode == 'Documents':
+            try:
+                assert chroma != None
+            except AssertionError as e:
+                st.sidebar.warning('Upload at least one document')
+                raise e
+            
+            llm_chain, llm = get_retrieval_chain(model_name, temperature, docsearch = chroma)
+    else:
+        if chain_mode == "Data":
+            
+            st.sidebar.warning("Note: No CSV data uploaded. All queries will be directed to the Database")
+            llm_chain, llm = init_agent(model_name, temperature, csv=paths)
+
+        elif chain_mode == 'Documents':
+            try:
+                assert chroma != None
+            except AssertionError as e:
+                st.sidebar.warning('Upload at least one document or swith to data query')
+                
+        
 
     init_messages()
 
@@ -321,7 +391,7 @@ def main() -> None:
         st.session_state.messages.append(
             HumanMessage(content=user_input_w_context))
         with st.spinner("ChatGPT is typing ..."):
-            answer, cost = get_answer(llm_agent,llm, user_input)
+            answer, cost = get_answer(llm_chain,llm, user_input)
         st.session_state.messages.append(AIMessage(content=answer))
         st.session_state.costs.append(cost)
 

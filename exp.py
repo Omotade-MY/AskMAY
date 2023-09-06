@@ -36,9 +36,12 @@ llm = OpenAI(temperature=0,model="text-davinci-003", streaming=True)
 from SQLagent import build_sql_agent, sql_as_tool
 from csv_chat import build_csv_agent, csv_as_tool
 llm = OpenAI(temperature=0,model="text-davinci-003", streaming=True)
+from utility import process_csv_file
+file_paths = process_csv_file('ChatGPT_Learning_Data.xlsx')
+file_paths.append(process_csv_file('namesCopy.csv'))
 
 sql_agent = build_sql_agent(llm=llm)
-csv_agent = build_csv_agent(llm=llm, file_path=['ChatGPT_Learning_Data.xlsx'])
+csv_agent = build_csv_agent(llm=llm, file_path=file_paths)
 tools = [
     csv_as_tool(csv_agent),
     sql_as_tool(sql_agent),

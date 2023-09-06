@@ -174,7 +174,7 @@ tools = [
     Tool.from_function(
         name = 'sql_database_query_agent',
         func= llm_sql_agent.run,
-        description= 'Use this tool when you need run a query against a database. You should use this tool if you did not get an answer after using llm_csv_agent'
+        description= 'Use this tool when you need run a query against a database. '
     )
 ]
 

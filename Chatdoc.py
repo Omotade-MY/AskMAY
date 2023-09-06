@@ -27,72 +27,69 @@ from langchain import PromptTemplate
 
 
 os.environ['OPENAI_API_KEY'] = "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"
-global csv_files
+
 
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 embeddings = OpenAIEmbeddings()
 
-welcome_message = """Welcome to the Chainlit PDF QA demo! To get started:
-1. Upload a PDF or text file
-2. Ask a question about the file
-"""
 
-
-def process_file(file: AskFileResponse):
-    import tempfile
-
-    if file.type == "text/plain":
-        Loader = TextLoader
-    elif file.type == "application/pdf":
+files = ["Assignment 516 Group_4.pdf", 'ENGINEERING_CONTRACT_LAW.pdf']
+for file in files:
+    docs = []
+    if file.split('.')[-1] == "txt":
+            Loader = TextLoader
+    elif file.split('.')[-1] == "pdf":
         Loader = PyPDFLoader
-
-    with tempfile.NamedTemporaryFile(delete=False) as tempfile:
-        tempfile.write(file.content)
-        loader = Loader(tempfile.name)
-        documents = loader.load()
-        docs = text_splitter.split_documents(documents)
-        for i, doc in enumerate(docs):
-            doc.metadata["source"] = f"source_{i}"
-        return docs
+    loader = Loader(file)
+    docs.extend(loader.load())
 
 
-def get_docsearch(file: AskFileResponse):
-    docs = process_file(file)
-
-    # Save data in the user session
-    cl.user_session.set("docs", docs)
-
-    # Create a unique namespace for the file
-
-    docsearch = Chroma.from_documents(
+documents = text_splitter.split_documents(docs)
+docsearch = Chroma.from_documents(
         docs, embeddings
     )
-    return docsearch
 
 
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 llm = ChatOpenAI(temperature=0, streaming=True)
 
-
-
-
-
-docsearch = get_docsearch)(file)
-
-
 chain = RetrievalQAWithSourcesChain.from_chain_type(
 llm,
 retriever = docsearch.as_retriever(max_tokens_limit=4097)
 )
-    # Let the user know that the system is ready
-    
-
-#def run_qa_chain(question):
-    #   results = llm_qa_chain({"question":question}, return_only_outputs=True)
-    #  return str(results)
 
 
+def run_qa_chain(question):
+    results = chain(question)
+    return str(results['answer']+'\nSOURCES: ' + results['sources'])
+
+tool = [
+     Tool.from_function(
+          name = 'llm_retrieval_chain',
+          func= run_qa_chain,
+          description= "This tol should be used to retriev answers from documents/content"
+     )
+     ]
+
+agent = initialize_agent(
+        tools= tool,
+        llm=llm,
+        agent= AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+        handle_parsing_error=True,
+        verbose = True,
+    )
+message = "What are the water regulatory Acts?"
 
 
-
-res = chain.run(message, callbacks=[cb])
+import langchain
+while True:
+    message = input('User:> ')
+    try:
+        response = chain.run(message)
+    except Exception as e:
+        response = str(e)
+        if not response.startswith("Could not parse tool input: ") or\
+            response.startswith("Could not parse LLM output: "):
+            raise e
+        response = response.removeprefix("Could not parse LLM output: `").removesuffix("`")
+    print('Chatbot:> ', response)

@@ -24,8 +24,11 @@ from langchain.vectorstores import Chroma
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.agents import initialize_agent, Tool, AgentType
 from langchain.memory import ConversationBufferMemory
+from langchain.chains import RetrievalQAWithSourcesChain, ConversationalRetrievalChain
 
 
+
+st.session_state.csv_file_paths = []
 
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
@@ -61,8 +64,11 @@ def init_messages() -> None:
             SystemMessage(
                 content=(
                     "You are a helpful AI QA assistant. "
+                    "You have access to csv tools. Use it to answer questions."
+                    "You have access to sql tool you can query a database"
                     "When answering questions, use the context enclosed by triple backquotes if it is relevant. "
                     "If you don't know the answer, just say that you don't know, "
+                    "You should only say you don't know an answer untill you have used all the tools available to you."
                     "don't try to make up an answer. "
                     )
             )
@@ -73,39 +79,58 @@ def get_csv_file() -> Optional[str]:
     """
     Function to load PDF text and split it into chunks.
     """
+    import tempfile
+    
     st.header("Document Upload")
-    uploaded_file = st.file_uploader(
-        label="Here, upload your csv file you want AskMAY to use to answer",
-        type= ["csv", 'xlsx']
+    
+    uploaded_files = st.file_uploader(
+        label="Here, upload your documents you want AskMAY to use to answer",
+        type= ["csv", 'xlsx', 'pdf', 'txt'],
+        accept_multiple_files= True
     )
     import pandas as pd
     import os
-    file = uploaded_file
-    if uploaded_file:
-        
-    
-        if file.type == "text/plain":
-            Loader = TextLoader
-        elif file.type == "application/pdf":
-            Loader = PyPDFLoader
-        elif file.type == "text/csv":
-            Loader = CSVLoader
-            csv_files.append(file)
+    if uploaded_files:
+        all_docs = []
+        csv_paths = []
+        all_files = []
+        for file in uploaded_files:
+            print(file.type)
+            Loader = None
+            if file.type == "text/plain":
+                Loader = TextLoader
+            elif file.type == "application/pdf":
+                Loader = PyPDFLoader
+            elif file.type == "text/csv":
+                flp = './temp.csv'
+                pd.read_csv(file).to_csv(flp, index=False)
+                csv_paths.append(flp)
 
-        elif file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-            Loader = ExcelLoader
+            elif file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+                loader = ExcelLoader(file)
+                paths = loader.load()
+                print('LOADED PATHS', paths)
+                csv_paths.extend(paths)
 
-        else:
-            raise ValueError('File type is not supported')
+            else:
+                raise ValueError('File type is not supported')
 
+            if Loader:
+                with tempfile.NamedTemporaryFile(delete=False) as tpfile:
+                    tpfile.write(file.getvalue())
+                    loader = Loader(tpfile.name)
+                    docs = loader.load()
+                    all_docs.extend(docs)
 
-        print('FIlE NAME', uploaded_file.type)
-        pd.read_csv(uploaded_file).to_csv('temp.csv', index=False)
-        
-        docs = CSVLoader('temp.csv').load()
-        #text = "\n\n".join([page.extract_text() for page in pdf_reader.pages])
-        documents = text_splitter.split_documents(docs)
-        return documents
+            #text = "\n\n".join([page.extract_text() for page in pdf_reader.pages])
+        if all_docs:
+            documents = text_splitter.split_documents(all_docs)
+            all_files.append(('docs', documents))
+        if csv_paths:
+            all_files.append(('csv', csv_paths))
+        all_files = tuple(all_files)
+
+        return all_files
     else:
         return None
 
@@ -115,8 +140,9 @@ def build_vectore_store(
     """
     Store the embedding vectors of text chunks into vector store (Qdrant).
     """
+    
     if docs:
-        with st.spinner("Loading CSV FIle ..."):
+        with st.spinner("Loading FIle ..."):
             chroma = Chroma.from_documents(
              docs, embeddings
             )
@@ -142,11 +168,15 @@ def select_llm() -> Union[ChatOpenAI, LlamaCpp]:
                                    "llama-2-13b-chat.ggmlv3.q2_K.bin"))
     temperature = st.sidebar.slider("Temperature:", min_value=0.0,
                                     max_value=1.0, value=0.0, step=0.01)
+    chain_mode = st.sidebar.selectbox(
+                        "What would you like to query?",
+                        ("Documents", "Data")
+    )
     
-    return model_name, temperature
+    return model_name, temperature, chain_mode
 
 
-def init_agent(model_name: str, temperature: float) -> Union[ChatOpenAI, LlamaCpp]:
+def init_agent(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenAI, LlamaCpp]:
     """
     Load LLM.
     """
@@ -168,12 +198,24 @@ def init_agent(model_name: str, temperature: float) -> Union[ChatOpenAI, LlamaCp
             callback_manager=callback_manager,
             verbose=False,  # True
         )
-    csv_agent = build_csv_agent(llm=llm, file_path='namesCopy.csv')
+
     sql_agent = build_sql_agent(llm=llm)
-    tools = [
-        csv_as_tool(csv_agent),
-        sql_as_tool(sql_agent),
-    ]
+    
+    file_paths = kwargs['csv']
+    if file_paths is not None:
+        with st.spinner("Loading CSV FIle ..."):
+            csv_agent = build_csv_agent(llm=llm, file_path=file_paths)
+        tools = [
+            csv_as_tool(csv_agent),
+            sql_as_tool(sql_agent),
+        ]
+    
+    else:
+        tools = [
+            sql_as_tool(sql_agent),
+        ]
+        pass
+    
     agent = initialize_agent(
         tools = tools,
         llm=llm,
@@ -181,6 +223,33 @@ def init_agent(model_name: str, temperature: float) -> Union[ChatOpenAI, LlamaCp
         memory = memory
     )
     return agent, llm
+
+def get_retrieval_chain(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenAI, LlamaCpp]:
+    if model_name.startswith("gpt-"):
+        llm =  ChatOpenAI(temperature=temperature, model_name=model_name)
+    
+    elif model_name.startswith("text-dav"):
+        llm =  OpenAI(temperature=temperature, model_name=model_name)
+    
+    elif model_name.startswith("llama-2-"):
+        callback_manager = CallbackManager([StreamingStdOutCallbackHandler()])
+        llm = LlamaCpp(
+            model_path=f"./models/{model_name}.bin",
+            input={"temperature": temperature,
+                   "max_length": 2048,
+                   "top_p": 1
+                   },
+            n_ctx=2048,
+            callback_manager=callback_manager,
+            verbose=False,  # True
+        )
+    docsearch = kwargs['docsearch']
+    retrieval_chain = RetrievalQAWithSourcesChain.from_chain_type(
+            llm,
+            retriever = docsearch.as_retriever(max_tokens_limit=4097)
+            )
+        
+    return retrieval_chain, llm
 
 def load_embeddings(model_name: str) -> Union[OpenAIEmbeddings, LlamaCppEmbeddings]:
     """
@@ -191,14 +260,25 @@ def load_embeddings(model_name: str) -> Union[OpenAIEmbeddings, LlamaCppEmbeddin
     elif model_name.startswith("llama-2-"):
         return LlamaCppEmbeddings(model_path=f"./models/{model_name}.bin")
 
-def get_answer(llm_agent,llm, message) -> tuple[str, float]:
+def get_answer(llm_chain,llm, message) -> tuple[str, float]:
     """
     Get the AI answer to user questions.
     """
 
     if isinstance(llm, (ChatOpenAI, OpenAI)):
         with get_openai_callback() as cb:
-            answer = llm_agent.run(message)
+            try:
+                if isinstance(llm_chain, RetrievalQAWithSourcesChain):
+                    response = llm_chain(message)
+                    answer =  str(response['answer']) + "\n\nSOURCES: " + str(response['sources'])
+                else:
+                    answer = llm_chain.run(message)
+            except ValueError as e:
+                response = str(e)
+                if not response.startswith("Could not parse tool input: "):
+                    raise e
+                answer = response.removeprefix("Could not parse LLM output: `").removesuffix("`")
+            
         return answer, cb.total_cost
     #if isinstance(llm, LlamaCpp):
      #   return llm(llama_v2_prompt(convert_langchainschema_to_dict(messages))), 0.0
@@ -251,13 +331,47 @@ def main() -> None:
         st.session_state['history'] = []
 
     init_page()
-    model_name, temperature = select_llm()
-    llm_agent, llm = init_agent(model_name, temperature)
+    model_name, temperature, chain_mode = select_llm()
 
-    if not set_stage.has_been_set:
-        embeddings = load_embeddings(model_name)
-        texts = get_csv_file()
-        chroma = build_vectore_store(texts, embeddings)
+    
+    embeddings = load_embeddings(model_name)
+    files = get_csv_file()
+    paths, texts, chroma = None, None, None
+
+    if files is not None:
+        for fp in files:
+            if fp[0] == 'csv':
+                paths = fp[1]
+            elif fp[0] == 'docs':
+                texts = fp[1]
+        if texts:
+            chroma = build_vectore_store(texts, embeddings)
+        
+        if chain_mode == "Data":
+            if paths is None:
+                st.sidebar.warning("Note: No CSV data uploaded. All queries will be directed to the Database")
+            llm_chain, llm = init_agent(model_name, temperature, csv=paths)
+        elif chain_mode == 'Documents':
+            try:
+                assert chroma != None
+            except AssertionError as e:
+                st.sidebar.warning('Upload at least one document')
+                raise e
+            
+            llm_chain, llm = get_retrieval_chain(model_name, temperature, docsearch = chroma)
+    else:
+        if chain_mode == "Data":
+            
+            st.sidebar.warning("Note: No CSV data uploaded. All queries will be directed to the Database")
+            llm_chain, llm = init_agent(model_name, temperature, csv=paths)
+
+        elif chain_mode == 'Documents':
+            try:
+                assert chroma != None
+            except AssertionError as e:
+                st.sidebar.warning('Upload at least one document or swith to data query')
+                
+        
 
     init_messages()
 
@@ -272,11 +386,12 @@ def main() -> None:
                 .format(
                     context=context, question=user_input)
             
-        
+        else:
+            user_input_w_context = user_input
         st.session_state.messages.append(
             HumanMessage(content=user_input_w_context))
         with st.spinner("ChatGPT is typing ..."):
-            answer, cost = get_answer(llm_agent,llm, user_input)
+            answer, cost = get_answer(llm_chain,llm, user_input)
         st.session_state.messages.append(AIMessage(content=answer))
         st.session_state.costs.append(cost)
 
