@@ -17,7 +17,7 @@ from langchain.memory import ConversationBufferMemory
 from langchain.agents import create_sql_agent 
 from langchain.agents.agent_toolkits import SQLDatabaseToolkit 
 from langchain.sql_database import SQLDatabase 
-
+os.environ["LANGCHAIN_TRACING"] = "true"
 username = 'postgres'
 host = 'localhost'
 port = '5432'
@@ -36,22 +36,35 @@ global csv_files
 csv_files = []
 
 class ExcelLoader():
-    def __init__(self, name=None):
-        self.ext = 'xlsx'
-        self.name =  name
+    def __init__(self, file):
         import pandas as pd
-        self.loader = pd.read_excel
+        self.status = False
+        self.name =  'ExcelLoader'
+        self.file = file
+        self.loader = pd.ExcelFile
+        self.ext = ['xlsx']
     
     def load(self):
-        import pandas as pd
-        df = self.loader(self.name)
-        print(df)
-        df.to_csv('./tempfile.csv', index=False)
+        from langchain.document_loaders.csv_loader import CSVLoader
 
-        loader = CSVLoader('./tempfile.csv')
-        docs =  loader.load()
+        ssheet = self.loader(self.file)
+        try:
+            os.mkdir('temp')
 
-        os.remove('./tempfile.csv')
+        except FileExistsError:
+            pass
+        docs = []
+        from randomize import randomName
+        for i,sheet in enumerate(ssheet.sheet_names):
+            df = ssheet.parse(sheet)
+            #file_name = randomName()
+            temp_path = f'./temp/{sheet}.csv'
+            csv_files.append(temp_path)
+            df.to_csv(temp_path, index=False)
+            loader = CSVLoader(temp_path)
+            doc = loader.load()
+            docs.extend(doc)
+            #os.remove(temp_path)
 
         return docs
 
@@ -89,7 +102,7 @@ def process_file(file: AskFileResponse):
 def get_docsearch(file: AskFileResponse):
     
     docs = process_file(file)
-
+    
     docsearch = Chroma.from_documents(
         docs, embeddings
     )
@@ -113,6 +126,11 @@ for file in files:
         retriever = retriever,
         memory = memory
     )
+    llm_qa_chain = RetrievalQAWithSourcesChain.from_chain_type(
+                llm=llm,
+                chain_type="stuff",
+                retriever=docsearch.as_retriever(max_tokens_limit=4097),
+        )
 
 
 if len(csv_files) == 1:
@@ -122,9 +140,9 @@ if len(csv_files) == 1:
 llm_csv_agent_chain = create_csv_agent(
     llm,
     csv_files,
-    verbose=True,
+    verbose=False,
     handle_parsing_errors=True,
-agent_type=AgentType.OPENAI_FUNCTIONS,
+    agent_type=AgentType.OPENAI_FUNCTIONS,
     )
 
 
@@ -143,14 +161,14 @@ tools = [
     Tool.from_function(
             name="csv_agent",
             func=llm_csv_agent_chain.run,
-            description="useful for when you need to give statistics. Example questions could be 'who is the the total number of rows'. Use this tool when you are asked to find things like average, most, highest etc. Use this function first if you need to anser question from a CSV document",
+            description="useful for when you need to give statistics. Example questions could be 'what is the the total number of rows'. Use this tool when you are asked to find things like average, most, highest etc. Use this function first if you need to anser question from a CSV document",
 
         
         ),
     
     Tool.from_function(
         name="converse_retrieve_agent",
-        func=llm_retrieval_chain.run,
+        func=llm_qa_chain,
         description="This tool should be used when you need to answer questions from other documents and also for chatting and conversing and responding to greetings",
     ),
     Tool.from_function(
@@ -162,13 +180,12 @@ tools = [
 
 
 # Use the agent tool.
-agent = initialize_agent(tools=tools, llm=llm, 
+agent = initialize_agent(
+                         tools=tools, llm=llm, 
                          agent = AgentType.ZERO_SHOT_REACT_DESCRIPTION, 
                          verbose=True, 
                          memory=memory,
                          handle_parsing_errors=True)
-
-query = "what is the average of Calcination temperature (oC)"
 
 while True:
     message = input('User:> ')

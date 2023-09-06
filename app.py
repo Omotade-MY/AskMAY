@@ -27,8 +27,6 @@ from langchain.memory import ConversationBufferMemory
 
 
 
-st.session_state.csv_file_paths = []
-
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 embeddings = OpenAIEmbeddings()
@@ -75,57 +73,39 @@ def get_csv_file() -> Optional[str]:
     """
     Function to load PDF text and split it into chunks.
     """
-    import tempfile
     st.header("Document Upload")
-    
-    uploaded_files = st.file_uploader(
-        label="Here, upload your documents you want AskMAY to use to answer",
-        type= ["csv", 'xlsx'],
-        accept_multiple_files= True
+    uploaded_file = st.file_uploader(
+        label="Here, upload your csv file you want AskMAY to use to answer",
+        type= ["csv", 'xlsx']
     )
     import pandas as pd
     import os
-    if uploaded_files:
-        all_docs = []
-        csv_paths = []
-        all_files = []
-        for file in uploaded_files:
-            print(file.type)
-            Loader = None
-            if file.type == "text/plain":
-                Loader = TextLoader
-            elif file.type == "application/pdf":
-                Loader = PyPDFLoader
-            elif file.type == "text/csv":
-                flp = './temp.csv'
-                pd.read_csv(file).to_csv(flp, index=False)
-                csv_paths.append(flp)
+    file = uploaded_file
+    if uploaded_file:
+        
+    
+        if file.type == "text/plain":
+            Loader = TextLoader
+        elif file.type == "application/pdf":
+            Loader = PyPDFLoader
+        elif file.type == "text/csv":
+            Loader = CSVLoader
+            csv_files.append(file)
 
-            elif file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-                loader = ExcelLoader(file)
-                paths = loader.load()
-                print('LOADED PATHS', paths)
-                csv_paths.extend(paths)
+        elif file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            Loader = ExcelLoader
 
-            else:
-                raise ValueError('File type is not supported')
+        else:
+            raise ValueError('File type is not supported')
 
-            if Loader:
-                with tempfile.NamedTemporaryFile(delete=False) as tempfile:
-                    tempfile.write(file.content)
-                    loader = Loader(tempfile.name)
-                    docs = loader.load()
-                    all_docs.extend(docs)
 
-            #text = "\n\n".join([page.extract_text() for page in pdf_reader.pages])
-        if all_docs:
-            documents = text_splitter.split_documents(all_docs)
-            all_files.append(('docs', documents))
-        if csv_paths:
-            all_files.append(('csv', csv_paths))
-        all_files = tuple(all_files)
-
-        return all_files
+        print('FIlE NAME', uploaded_file.type)
+        pd.read_csv(uploaded_file).to_csv('temp.csv', index=False)
+        
+        docs = CSVLoader('temp.csv').load()
+        #text = "\n\n".join([page.extract_text() for page in pdf_reader.pages])
+        documents = text_splitter.split_documents(docs)
+        return documents
     else:
         return None
 
@@ -135,9 +115,8 @@ def build_vectore_store(
     """
     Store the embedding vectors of text chunks into vector store (Qdrant).
     """
-    
     if docs:
-        with st.spinner("Loading FIle ..."):
+        with st.spinner("Loading CSV FIle ..."):
             chroma = Chroma.from_documents(
              docs, embeddings
             )
@@ -167,7 +146,7 @@ def select_llm() -> Union[ChatOpenAI, LlamaCpp]:
     return model_name, temperature
 
 
-def init_agent(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenAI, LlamaCpp]:
+def init_agent(model_name: str, temperature: float) -> Union[ChatOpenAI, LlamaCpp]:
     """
     Load LLM.
     """
@@ -189,23 +168,12 @@ def init_agent(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenA
             callback_manager=callback_manager,
             verbose=False,  # True
         )
-
+    csv_agent = build_csv_agent(llm=llm, file_path='namesCopy.csv')
     sql_agent = build_sql_agent(llm=llm)
-    try:
-        file_paths = kwargs['csv']
-        with st.spinner("Loading CSV FIle ..."):
-            csv_agent = build_csv_agent(llm=llm, file_path=file_paths)
-        tools = [
-            csv_as_tool(csv_agent),
-            sql_as_tool(sql_agent),
-        ]
-    except KeyError:
-
-        tools = [
-            sql_as_tool(sql_agent),
-        ]
-        pass
-    
+    tools = [
+        csv_as_tool(csv_agent),
+        sql_as_tool(sql_agent),
+    ]
     agent = initialize_agent(
         tools = tools,
         llm=llm,
@@ -284,24 +252,12 @@ def main() -> None:
 
     init_page()
     model_name, temperature = select_llm()
-    
-    embeddings = load_embeddings(model_name)
-    files = get_csv_file()
-    paths, texts, chroma = None, None, None
+    llm_agent, llm = init_agent(model_name, temperature)
 
-    if files is not None:
-        for fp in files:
-            if fp[0] == 'csv':
-                paths = fp[1]
-            elif fp[0] == 'docs':
-                texts = fp[1]
-        if texts:
-            chroma = build_vectore_store(texts, embeddings)
-        if paths:
-            print('GOT PATHS')
-            llm_agent, llm = init_agent(model_name, temperature, csv=paths)
-        else:
-            llm_agent, llm = init_agent(model_name, temperature)
+    if not set_stage.has_been_set:
+        embeddings = load_embeddings(model_name)
+        texts = get_csv_file()
+        chroma = build_vectore_store(texts, embeddings)
 
     init_messages()
 
@@ -316,8 +272,7 @@ def main() -> None:
                 .format(
                     context=context, question=user_input)
             
-        else:
-            user_input_w_context = user_input
+        
         st.session_state.messages.append(
             HumanMessage(content=user_input_w_context))
         with st.spinner("ChatGPT is typing ..."):

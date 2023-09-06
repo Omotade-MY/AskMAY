@@ -196,7 +196,7 @@ async def main(message):
     cb.answer_reached = True
     print('I reached here   1!!!')
 
-    res = await chain.acall(message, callbacks=[cb])
+    res = await chain.run(message, callbacks=[cb])
     print('I reached here!!!')
     answer = res["answer"]
     sources = res["sources"].strip()
