@@ -95,7 +95,7 @@ def get_csv_file() -> Optional[str]:
         csv_paths = []
         all_files = []
         for file in uploaded_files:
-            print(file.type)
+            
             Loader = None
             if file.type == "text/plain":
                 Loader = TextLoader
@@ -109,7 +109,7 @@ def get_csv_file() -> Optional[str]:
             elif file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
                 loader = ExcelLoader(file)
                 paths = loader.load()
-                print('LOADED PATHS', paths)
+                
                 csv_paths.extend(paths)
 
             else:
