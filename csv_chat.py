@@ -45,7 +45,7 @@ def build_csv_agent(llm, file_path):
     assert isinstance(file_path, list)
     if len(file_path) == 1:
          file_path = file_path[0]
-    print(file_path)
+    
 
     csv_agent = create_csv_agent(
         llm,
