@@ -33,25 +33,14 @@ memory = ConversationBufferMemory(memory_key="chat_history", return_messages= Tr
 llm = OpenAI(temperature=0,model="text-davinci-003", streaming=True)
 
 
-from SQLagent import build_sql_agent, sql_as_tool
-from csv_chat import build_csv_agent, csv_as_tool
+from app.SQLagent import build_sql_agent, sql_as_tool
+from app.csv_chat import build_csv_agent, csv_as_tool
 llm = OpenAI(temperature=0,model="text-davinci-003", streaming=True)
-from utility import process_csv_file
-file_paths = process_csv_file('ChatGPT_Learning_Data.xlsx')
-file_paths.append(process_csv_file('namesCopy.csv'))
+from app.utility import process_csv_file
+#file_paths = process_csv_file('ChatGPT_Learning_Data.xlsx')
+file_paths = process_csv_file('namesCopy.csv')
 
-sql_agent = build_sql_agent(llm=llm)
-csv_agent = build_csv_agent(llm=llm, file_path=file_paths)
-tools = [
-    csv_as_tool(csv_agent),
-    sql_as_tool(sql_agent),
-        ]
-    
-agent = initialize_agent(
-    tools = tools,
-    llm=llm,
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        memory = memory
-    )
+#sql_agent = build_sql_agent(llm=llm)
+csv_agent = build_csv_agent(llm=llm, file_path=[file_paths])
 
-agent.run('what sectors are available?')
+csv_agent.run('give me a pie chart plot of the students exam score vs total score')
