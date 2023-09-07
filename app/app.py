@@ -1,6 +1,6 @@
-from SQLagent import build_sql_agent, sql_as_tool
-from csv_chat import build_csv_agent, csv_as_tool
-from utility import ExcelLoader
+from app.SQLagent import build_sql_agent, sql_as_tool
+from app.csv_chat import build_csv_agent, csv_as_tool
+from app.utility import ExcelLoader
 # app.py
 from typing import List, Union, Optional
 from langchain.document_loaders import PyPDFLoader, TextLoader
@@ -25,7 +25,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.agents import initialize_agent, Tool, AgentType
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import RetrievalQAWithSourcesChain, ConversationalRetrievalChain
-
+import os
 
 
 st.session_state.csv_file_paths = []
@@ -47,16 +47,26 @@ Question: [][][][]{question}[][][][]
 Answer:"""
 
 
+def open_ai_key():
+    with st.sidebar:
+        openai_api_key = st.text_input("OpenAI API Key", key="chatbot_api_key", type="password")
+        "[Get an OpenAI API key](https://platform.openai.com/account/api-keys)"
+        if not openai_api_key:
+            st.info("Please add your OpenAI API key to continue.")
+            st.stop()
+        os.environ["OPENAI_API_KEY"] = openai_api_key
+
+
 def init_page() -> None:
     st.set_page_config(
     )
     st.sidebar.title("Options")
     icon, title = st.columns([3, 20])
     with icon:
-        st.image('image.png')
+        st.image('./docs/image.png')
     with title:
-        st.title('AskMAY Chatbot')
-
+        st.title('Finance Chatbot')
+    st.session_state['db_active'] = False
 def init_messages() -> None:
     clear_button = st.sidebar.button("Clear Conversation", key="clear")
     if clear_button or "messages" not in st.session_state:
@@ -64,11 +74,8 @@ def init_messages() -> None:
             SystemMessage(
                 content=(
                     "You are a helpful AI QA assistant. "
-                    "You have access to csv tools. Use it to answer questions."
-                    "You have access to sql tool you can query a database"
-                    "When answering questions, use the context enclosed by triple backquotes if it is relevant. "
+                    "When answering questions, use the context provided to you."
                     "If you don't know the answer, just say that you don't know, "
-                    "You should only say you don't know an answer untill you have used all the tools available to you."
                     "don't try to make up an answer. "
                     )
             )
@@ -81,11 +88,11 @@ def get_csv_file() -> Optional[str]:
     """
     import tempfile
     
-    st.header("Document Upload")
+    st.header("Upload Document or Connect to a Databse")
     
     uploaded_files = st.file_uploader(
         label="Here, upload your documents you want AskMAY to use to answer",
-        type= ["csv", 'xlsx', 'pdf', 'txt'],
+        type= ["csv", 'xlsx', 'pdf','docs','txt'],
         accept_multiple_files= True
     )
     import pandas as pd
@@ -133,6 +140,52 @@ def get_csv_file() -> Optional[str]:
         return all_files
     else:
         return None
+def get_db_credentials(model_name, temperature, chain_mode='Database'):
+    """
+    creates a form for user to input database login credentials
+    """
+
+    username = None
+    host = None
+    port = None
+    db = None
+    password = None
+    import time
+    pholder = st.empty()
+    with pholder.form('Database_Login'):
+        st.write("Enter Database Credentials ")
+        username = st.text_input('Username').strip()
+        password = st.text_input('Password', type='password',).strip()
+        rdbs = st.selectbox('Select RDBS:',
+                            ("Postgres",
+                            'MS SQL Server/Azure SQL',
+                            "MySQL",
+                            "Oracle")
+                        )
+        port = st.number_input('Port')
+        host = st.text_input('Hostname').strip()
+        db = st.text_input('Database name').strip()
+
+        submitted = st.form_submit_button('Submit')
+        if submitted:
+            with st.spinner("Logging into database..."):
+                
+                llm_chain, llm = init_agent(model_name=model_name,
+                                    temperature=temperature,
+                                    rdbs = rdbs,
+                                    username=username,
+                                    password=password,
+                                    port=port,
+                                    host=host,
+                                    database=db,
+                                    chain_mode = chain_mode)
+                st.session_state['models'] = (llm_chain, llm)
+            st.success("Login Success")
+            st.session_state['db_active'] = True
+            time.sleep(1)
+            pholder.empty()
+    
+    return st.session_state['models']
 
 def build_vectore_store(
     docs: str, embeddings: Union[OpenAIEmbeddings, LlamaCppEmbeddings]) \
@@ -164,16 +217,16 @@ def select_llm() -> Union[ChatOpenAI, LlamaCpp]:
                                    "gpt-3.5-turbo-16k-0613",
                                    "gpt-4",
                                    "text-davinci-003",
-                                   "llama-2-7b-chat.ggmlv3.q2_K",
-                                   "llama-2-13b-chat.ggmlv3.q2_K.bin"))
+                                   ))
     temperature = st.sidebar.slider("Temperature:", min_value=0.0,
                                     max_value=1.0, value=0.0, step=0.01)
     chain_mode = st.sidebar.selectbox(
                         "What would you like to query?",
-                        ("Documents", "Data")
+                        ("Documents", "CSV|Excel", 'Database')
     )
+    #api_key  = st.sidebar.text_input('OPENAI API Key')
     
-    return model_name, temperature, chain_mode
+    return model_name, temperature, chain_mode,# api_key
 
 
 def init_agent(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenAI, LlamaCpp]:
@@ -198,31 +251,24 @@ def init_agent(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenA
             callback_manager=callback_manager,
             verbose=False,  # True
         )
+    chain_mode = kwargs['chain_mode']
+    if chain_mode == 'Database':
+        rdbs = kwargs['rdbs']
+        username = kwargs['username']
+        password = kwargs['password']
+        host = kwargs['host']
+        port = kwargs['port']
+        database = kwargs['database']
 
-    sql_agent = build_sql_agent(llm=llm)
+        llm_agent = build_sql_agent(llm=llm, rdbs=rdbs, username=username, password=password,
+                                    host=host, port=port, database=database)
+    if chain_mode == 'CSV|Excel':
+        file_paths = kwargs['csv']
+        if file_paths is not None:
+            with st.spinner("Loading CSV FIle ..."):
+                llm_agent = build_csv_agent(llm=llm, file_path=file_paths)
     
-    file_paths = kwargs['csv']
-    if file_paths is not None:
-        with st.spinner("Loading CSV FIle ..."):
-            csv_agent = build_csv_agent(llm=llm, file_path=file_paths)
-        tools = [
-            csv_as_tool(csv_agent),
-            sql_as_tool(sql_agent),
-        ]
-    
-    else:
-        tools = [
-            sql_as_tool(sql_agent),
-        ]
-        pass
-    
-    agent = initialize_agent(
-        tools = tools,
-        llm=llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        memory = memory
-    )
-    return agent, llm
+    return llm_agent, llm
 
 def get_retrieval_chain(model_name: str, temperature: float, **kwargs) -> Union[ChatOpenAI, LlamaCpp]:
     if model_name.startswith("gpt-"):
@@ -319,51 +365,65 @@ def extract_userquesion_part_only(content):
     return content
 
 
-def set_stage():
-    set_stage.has_been_set = True
-
-set_stage.has_been_set = False
 
 def main() -> None:
-    _ = load_dotenv(find_dotenv())
+    
+    init_page()
+    open_ai_key()
 
+    import os
     if 'history' not in st.session_state:
         st.session_state['history'] = []
-
-    init_page()
-    model_name, temperature, chain_mode = select_llm()
-
     
+    model_name, temperature, chain_mode = select_llm()
     embeddings = load_embeddings(model_name)
     files = get_csv_file()
     paths, texts, chroma = None, None, None
 
-    if files is not None:
+    if chain_mode == 'Database':
+        try:
+            if st.session_state['db_active']:
+                llm_chain, llm = st.session_state['models']
+            else:
+                llm_chain, llm = get_db_credentials(model_name=model_name, temperature=temperature,
+                                                chain_mode=chain_mode)
+        except KeyError:
+            st.sidebar.warning('Provide a Database Log in Details')
+            llm_chain, llm = None, None
+
+    elif files is not None:
         for fp in files:
             if fp[0] == 'csv':
                 paths = fp[1]
             elif fp[0] == 'docs':
                 texts = fp[1]
         if texts:
-            chroma = build_vectore_store(texts, embeddings)
+            import openai
+            try:
+                chroma = build_vectore_store(texts, embeddings)
+            except openai.error.AuthenticationError:
+                st.echo('Invalid OPENAI API KEY')
         
-        if chain_mode == "Data":
+        if chain_mode == "CSV|Excel":
             if paths is None:
-                st.sidebar.warning("Note: No CSV data uploaded. All queries will be directed to the Database")
-            llm_chain, llm = init_agent(model_name, temperature, csv=paths)
+                st.sidebar.warning("Note: No CSV or Excel data uploaded. Provide atleast one data source")
+            llm_chain, llm = init_agent(model_name, temperature, csv=paths, chain_mode=chain_mode)
+
         elif chain_mode == 'Documents':
             try:
                 assert chroma != None
+                llm_chain, llm = get_retrieval_chain(model_name, temperature, docsearch = chroma)
             except AssertionError as e:
                 st.sidebar.warning('Upload at least one document')
-                raise e
+                llm_chain, llm = None, None
             
-            llm_chain, llm = get_retrieval_chain(model_name, temperature, docsearch = chroma)
+        
     else:
-        if chain_mode == "Data":
-            
-            st.sidebar.warning("Note: No CSV data uploaded. All queries will be directed to the Database")
-            llm_chain, llm = init_agent(model_name, temperature, csv=paths)
+        if chain_mode == "CSV|Excel":
+            try: 
+                assert paths != None
+            except AssertionError as e:
+                st.sidebar.warning("Note: No CSV data uploaded. Upload at least one csv or excel file")
 
         elif chain_mode == 'Documents':
             try:
@@ -371,29 +431,33 @@ def main() -> None:
             except AssertionError as e:
                 st.sidebar.warning('Upload at least one document or swith to data query')
                 
-        
+    
 
     init_messages()
 
     # Supervise user input
     if user_input := st.chat_input("Input your question!"):
-        if chroma:
-            context = [c.page_content for c in chroma.similarity_search(
-                user_input, k=10)]
-            user_input_w_context = PromptTemplate(
-                template=PROMPT_TEMPLATE,
-                input_variables=["context", "question"]) \
-                .format(
-                    context=context, question=user_input)
-            
-        else:
-            user_input_w_context = user_input
-        st.session_state.messages.append(
-            HumanMessage(content=user_input_w_context))
-        with st.spinner("ChatGPT is typing ..."):
-            answer, cost = get_answer(llm_chain,llm, user_input)
-        st.session_state.messages.append(AIMessage(content=answer))
-        st.session_state.costs.append(cost)
+        try:
+            assert type(llm_chain) != type(None)
+            if chroma:
+                context = [c.page_content for c in chroma.similarity_search(
+                    user_input, k=10)]
+                user_input_w_context = PromptTemplate(
+                    template=PROMPT_TEMPLATE,
+                    input_variables=["context", "question"]) \
+                    .format(
+                        context=context, question=user_input)
+                
+            else:
+                user_input_w_context = user_input
+            st.session_state.messages.append(
+                HumanMessage(content=user_input_w_context))
+            with st.spinner("Assistant is typing ..."):
+                answer, cost = get_answer(llm_chain,llm, user_input)
+            st.session_state.messages.append(AIMessage(content=answer))
+            st.session_state.costs.append(cost)
+        except AssertionError:
+            st.warning('Please provide a context source')
 
     # Display chat history
     messages = st.session_state.get("messages", [])

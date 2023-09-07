@@ -36,7 +36,7 @@ welcome_message = """Welcome to the Chainlit PDF QA demo! To get started:
 1. Upload a PDF or text file
 2. Ask a question about the file
 """
-from utility import process_csv_file
+from app.utility import process_csv_file
 #llm = OpenAI(temperature=0, model="text-davinci-003")
 #'namesCopy.csv', 
 #file_paths = process_csv_file('ChatGPT_Learning_Data.xlsx')
@@ -45,7 +45,7 @@ def build_csv_agent(llm, file_path):
     assert isinstance(file_path, list)
     if len(file_path) == 1:
          file_path = file_path[0]
-    print(file_path)
+    
 
     csv_agent = create_csv_agent(
         llm,
