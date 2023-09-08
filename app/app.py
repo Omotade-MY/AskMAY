@@ -1,7 +1,8 @@
-from app.SQLagent import build_sql_agent, sql_as_tool
-from app.csv_chat import build_csv_agent, csv_as_tool
-from app.utility import ExcelLoader
+from SQLagent import build_sql_agent, sql_as_tool
+from csv_chat import build_csv_agent, csv_as_tool
+from utility import ExcelLoader
 # app.py
+import openai
 from typing import List, Union, Optional
 from langchain.document_loaders import PyPDFLoader, TextLoader
 from dotenv import load_dotenv, find_dotenv
@@ -112,6 +113,7 @@ def get_csv_file() -> Optional[str]:
                 flp = './temp.csv'
                 pd.read_csv(file).to_csv(flp, index=False)
                 csv_paths.append(flp)
+                
 
             elif file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
                 loader = ExcelLoader(file)
@@ -379,6 +381,7 @@ def main() -> None:
     embeddings = load_embeddings(model_name)
     files = get_csv_file()
     paths, texts, chroma = None, None, None
+    llm_chain, llm = None, None
 
     if chain_mode == 'Database':
         try:
@@ -402,7 +405,7 @@ def main() -> None:
             try:
                 chroma = build_vectore_store(texts, embeddings)
             except openai.error.AuthenticationError:
-                st.echo('Invalid OPENAI API KEY')
+                st.warning('Invalid OPENAI API KEY')
         
         if chain_mode == "CSV|Excel":
             if paths is None:
@@ -478,4 +481,7 @@ def main() -> None:
 
 # streamlit run app.py
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except openai.error.RateLimitError:
+        st.warning('OpenAI RateLimit: Your API Key has probably exceeded the maximum requests per min or per day')
